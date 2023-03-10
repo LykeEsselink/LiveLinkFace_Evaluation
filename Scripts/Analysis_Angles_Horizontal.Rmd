@@ -1,0 +1,585 @@
+---
+title: "LiveLink Experiment, Horizontal Angles"
+author: "Lyke Esselink"
+date: "2023-02-25"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(gdata)
+library(tidyr)
+library(tidyverse)
+library(dplyr)
+library(stringr)
+library(readr)
+library(ggplot2)
+library(lme4)
+options(scipen = 999)
+```
+
+The goal of this markdown file is to perform the analysis for the Horizontal 
+Angles RQ of the Live Link Face app validation experiment.
+
+
+# Prepare data
+
+Load the data. The column "ID" identifies the conditions of each recording. For 
+this specific analysis, the columns "Configuration" and "Calibration" can be 
+disregarded. Although the values of these columns are different, in this case 
+they simply mean that it concerns a different recording. 
+
+```{r Load data}
+data <- read.csv('Data/Data_Horizontal.csv', stringsAsFactors=TRUE)
+```
+
+Vector with all the blendshapes we are interested in. To reproduce the tables
+in the paper, "TrueDepth measurements of facial expressions: Sensitivity to the 
+angle between camera and face", use the version that is commented out.
+
+```{r Blendshapes}
+blendshapes = c('EyeBlinkLeft', 'EyeSquintLeft', 'EyeWideLeft','EyeBlinkRight', 
+                'EyeSquintRight', 'EyeWideRight','JawForward', 'JawOpen', 
+                'MouthClose', 'MouthFunnel', 'MouthPucker', 'MouthSmileLeft', 
+                'MouthSmileRight', 'MouthFrownLeft','MouthFrownRight', 
+                'MouthDimpleLeft', 'MouthDimpleRight','MouthStretchLeft', 
+                'MouthStretchRight', 'MouthRollLower','MouthRollUpper', 
+                'MouthShrugLower', 'MouthShrugUpper','MouthPressLeft', 
+                'MouthPressRight', 'MouthLowerDownLeft','MouthLowerDownRight', 
+                'MouthUpperUpLeft', 'MouthUpperUpRight','BrowDownLeft', 
+                'BrowDownRight', 'BrowInnerUp', 'BrowOuterUpLeft', 
+                'BrowOuterUpRight', 'CheekPuff', 'CheekSquintLeft', 
+                'CheekSquintRight', 'NoseSneerLeft', 'NoseSneerRight')
+
+# blendshapes = c('EyeSquintLeft', 'EyeWideLeft', 'EyeSquintRight', 
+#                 'EyeWideRight', 'MouthFrownLeft', 'MouthFrownRight', 
+#                 'MouthShrugLower', 'MouthShrugUpper', 'BrowDownLeft', 
+#                 'BrowDownRight', 'BrowInnerUp', 'BrowOuterUpLeft', 
+#                 'BrowOuterUpRight', 'CheekSquintLeft', 'CheekSquintRight', 
+#                 'NoseSneerLeft', 'NoseSneerRight')
+```
+
+
+### Separate dataframes
+
+We divide the main dataframe into two separate dataframes: one for the horizontal
+angle going right, and one for the horizontal angle going left. We check the 
+levels for Camera to ensure that data_horizontal_going_right only contains C0 
+and C3; and data_horizontal_going_left only contains C0 and C4.
+
+```{r Separate}
+data_horizontal_going_right <- data[data$Camera != "C4",]
+data_horizontal_going_right <- droplevels(data_horizontal_going_right)
+levels (data_horizontal_going_right$Camera)
+
+data_horizontal_going_left <- data[data$Camera != "C3",]
+data_horizontal_going_left <- droplevels(data_horizontal_going_left)
+levels (data_horizontal_going_left$Camera)
+```
+
+
+### Add contrasts
+
+We add contrasts to the fixed effect Camera. C0 is the reference camera, coded 
+at -1/2; and C3 and C4 are the comparison cameras coded at +1/2. We check that
+the contrasts are applied to the dataframes correctly.
+
+```{r Add contrasts}
+camera.contrast <- cbind (c(-0.5, +0.5))   # -C0+C3, -C0+C4
+colnames (camera.contrast) <- c("-C0+C3")
+contrasts (data_horizontal_going_right$Camera) <- camera.contrast
+contrasts (data_horizontal_going_right$Camera)
+
+colnames (camera.contrast) <- c("-C0+C4")
+contrasts (data_horizontal_going_left$Camera) <- camera.contrast
+contrasts (data_horizontal_going_left$Camera)
+```
+# Functions for analysis
+
+First, we define the functions to complete the analysis. This includes 1) 
+finding the High Activation (HA), Low Activation (LA), and No Activation (NA) 
+frames for each blendshape, 2) creating separate dataframes for each activation 
+level, 3) creating and extracting information from the linear mixed regression 
+models. 
+
+
+### Step 1: Finding HA, LA, and NA frames
+
+The first goal is to define a function in which the HA, LA, and NA frames of 
+the blendshapes are identified for each recording. This distinction is added to 
+the overall dataframe as an extra column.
+
+For each blendshape $b$, each camera $c_i$, and each recording $r$, we make a 
+distinction between HA, LA, and NA frames. A frame $f$ in $r$ is classified as 
+"HighlyActivated" according to camera $c_i$ if the value of $b$ as measured by 
+$c_i$ exceeds the threshold $\theta_{c_i}^{HA}$, defined as the mean of all 
+values of $b$ measured by $c_i$ in $r$ plus $0.5$ times the standard deviation 
+of these values. Similarly, $f$ is classified as "Activated" according to camera 
+$c_i$ if it is not "HighlyActivated" according to $c_i$ but the value of $b$ 
+as measured by $c_i$ still exceeds a minimal threshold $\theta_{c_i}^{LA}$, 
+which we set to $3$. Other frames are classified as "NotActivated" according to 
+$c_i$.
+
+
+#### Identify Activation Level
+
+In this helper function, we add a column to the dataframe that identifies 
+whether a frame falls under HA, LA, or NA. 
+
+This function takes as input a dataframe comprising the frames from a single 
+recording, the blendshape in question, and the minimal threshold. The dataframe
+contains a "Classification" column, denoting whether or not a frame is
+clasified as HA for that camera. 
+
+When comparing measurements by two cameras $c_1$ and $c_2$ of a blendshape $b$, 
+we classify a frame as HA if it is "HighlyActivated" according to both 
+cameras, as LA if it is not HA but still "Activated" or "HighlyActivated" 
+according to at least one camera, and as NA otherwise (i.e., if the frame is 
+classified as "NotActivated" by both cameras). 
+
+```{r Find Activation Level}
+find_activation <- function(df, blendshape) {
+  class_col <- paste(blendshape, "Class", sep="_")
+  activation_col <- paste(blendshape, "Activation", sep="_")
+  
+  # Identify LA frames
+  tmp_l <- df[(df[class_col] == "HighlyActivated" | df[class_col] == "Activated"),]
+  df[df$Frame %in% tmp_l$Frame, activation_col] <- "LA"
+
+  # Identify HA frames
+  tmp_h <- df[df[class_col] == "HighlyActivated",]
+  frames_h <- tmp_h$Frame
+  tmp_HA <- tmp_h[frames_h %in% intersect(frames_h, tmp_h[duplicated(frames_h),]$Frame),]
+  df[df$Frame %in% tmp_HA$Frame, activation_col] <- "HA"
+  
+  return(df)
+}
+```
+
+
+#### Classify frames
+
+This is the main function for classifying frames and the activation levels of 
+frames per blendshape. It adds two colums to the dataframe, the classification 
+of each frame for each camera ("HighlyActivated", "Activated", or 
+"NotActivated"), and the activation level according to the helper function above.
+
+The multiplier is defined as $0.5$, and the minimal threshold as $3$. We find
+these values to be strict enough for a satisfactory classification. Refer to
+the functions to create plots of classified frames at the bottom of this script
+when deciding on values for these variables.
+
+```{r Classify Frames}
+classify <- function(df, blendshape, mul=0.5, min_threshold=3) {
+  # Create classification and activation columns
+  class_col <- paste(blendshape, "Class", sep="_")
+  df <- add_column(df, !!class_col := 0, .after = blendshape)
+  activation_col <- paste(blendshape, "Activation", sep="_")
+  df <- add_column(df, !!activation_col := "NA", .after = class_col)
+
+  # Go over all individual recordings
+  for (id in levels(df$ID)) {
+    max_agreement <- 0
+    best_theta <- 0 
+    tmp <- df[df$ID == id,]
+
+    # For each camera that recorded data, get the mean and standard deviation
+    for (cam in levels(tmp$Camera)) {
+      mm <- tmp[tmp$Camera == cam,]
+      mean_val <- mean(mm[[blendshape]])
+      std_val <- sd(mm[[blendshape]])
+      
+      # Label blendshape measurements as "HighlyActivated", "Activated", or "NotActivated"
+      tmp_cam <- tmp %>%
+        filter(Camera == cam) %>%
+        mutate(class_col = if_else(get(blendshape) > (mean_val+(mul*std_val)), 
+                                   "HighlyActivated", 
+                                   if_else(get(blendshape) >= min_threshold, 
+                                           "Activated", "NotActivated")))
+      
+      # Update the classification column of tmp with the updated values
+      tmp[tmp$Camera == cam, class_col] <- tmp_cam$class_col
+    }
+
+    # Find the activation level of individual frames in tmp
+    tmp <- find_activation(tmp, blendshape)
+    # Write the activation levels and classifications of these frames to df
+    df[df$ID == id, c(class_col, activation_col)] <- tmp[, c(class_col, activation_col)]
+  }
+  df <- df %>% mutate(across(where(is.character), as.factor))
+  return(df)
+}
+```
+
+
+### Step 2: Creating a separate dataframe for the Activation Levels
+
+This function creates a new dataframe that contains all frames (over all 
+recordings) with a defined Activation Level for one blendshape. These individual
+dataframes are later used to create statistical models.
+
+```{r Get Activation}
+get_activation <- function(df, blendshape, activation_level="HA") {
+  activation_col <- paste(blendshape, "Activation", sep="_")
+  tmp_A <- df[df[activation_col] == activation_level,]
+  return(tmp_A)
+}
+```
+
+
+### Step 3: Create models
+
+This function creates a model with a specified formula for the given dataframe. 
+If the model is singular, it attempts a second model that does not have a random
+effect for ID.
+
+```{r Fit lmer}
+fit_lmer <- function(df, formula) {
+  # Fit the model
+  model <- lmerTest::lmer(formula, data=df)
+
+  # Check for singular fit
+  if (isSingular(model)) {
+    # Create a different model without the random slope for ID
+    formula_noID <- update(formula, . ~ . - (1 | ID))
+    model_noID <- lmerTest::lmer(formula_noID, data=df)
+    model <- model_noID
+    }
+
+  # Return the model
+  return(model)
+}
+```
+
+
+### Step 4: Extract information from models
+
+This function fits a model for the given dataframe, blendshape, formula, and 
+activation level. It appends the results to the result dataframe.
+
+If random_effects = 3, there is a random slope for ID and Participant; 
+if random_effects = 2, there is no random slope for ID, only for Participant.
+
+```{r Fit model}
+fit_model <- function(df, blendshape, results, comparison, activation_level) {
+  # Extract the frames for the given blendshape and activation level
+  df_A <- get_activation(df, blendshape, activation_level)
+  df_A <- droplevels(df_A)
+  
+  # The dataframe should be from at least two participants
+  if(length(unique(levels(df_A$Participant))) > 1) {
+    # Create formula
+    formula_text = paste(blendshape, "~ Camera + (1 | Participant) + (1 | ID)", 
+                         sep=" ")
+    formula <- formula(formula_text)
+    cam <- paste("C", comparison, sep="")
+    
+    # Get correlation
+    df_A_O <- df_A[df_A$Camera == "C0",]
+    df_A_C <- df_A[df_A$Camera == cam,]
+    correlation = round(cor(df_A_O[[blendshape]], df_A_C[[blendshape]]), 
+                        digits=2)
+  
+    # Fit the linear mixed-effects model
+    model <- fit_lmer(df_A, formula)
+  
+    if (!isSingular(model)) {
+      effect_name <- paste("Camera", cam, sep="")
+      
+      # Extract the RQ answering numbers from the fitted model
+      intercept <- round(fixef(model)[1], digits = 1)
+      effect_size <- round(fixef(model)[2], digits = 1)
+      perc_eff <- abs(round((effect_size/intercept)*100))
+      std_error <- round(coef(summary(model))[effect_name, "Std. Error"], 
+                         digits = 2) 
+      t_value <- round(coef(summary(model))[effect_name, "t value"], 
+                       digits = 2)
+      p_value <- round(summary(model)$coefficients[effect_name, "Pr(>|t|)"], 
+                       digits = 4)
+      random_effects <- nrow(as.data.frame(VarCorr(model)))
+      n_samples <- nrow(df_A)
+      
+      # Create a results dataframe for this model
+      new_results <- data.frame(Blendshape = blendshape,
+                                Activation = activation_level,
+                                Intercept = intercept,
+                                Effect = effect_size,
+                                Perc_eff = perc_eff,
+                                Std_error = std_error,
+                                T_value = t_value,
+                                P_value = p_value,
+                                Random_eff = random_effects,
+                                Correlation = correlation,
+                                N_samples = n_samples)
+    
+      # Append the new results to the existing results dataframe
+      results <- rbind(results, new_results)
+    }
+  }
+
+  # Return the updated results dataframe
+  return(results)
+}
+```
+
+
+# Analyse data
+
+Now we can calculate the results for the effect of the vertical angles. First, 
+we create two empty results dataframes. Next, we create a new dataframe in which
+frames are classified as the appropriate activation level. Finally, we fit the
+models and append the results to their respective dataframes.
+
+NB: Initial models may be singular, but in these cases a simplified model is
+used. For the current dataset and blendshapes, the simplified models all
+converge. When using original datasets, confirm if this is still true.
+
+
+### Camera 0 vs Camera 3: Horizontal Angle Going Right
+
+```{r C0 vs C3, message=FALSE}
+# Create empty results dataframes
+results_3HA <- data.frame(Blendshape = character(),
+                      Activation = character(),
+                      Intercept = numeric(),
+                      Effect = numeric(),
+                      Perc_eff = numeric(),
+                      Std_error = numeric(),
+                      T_value = numeric(),
+                      P_value = numeric(),
+                      Random_eff = numeric(),
+                      Correlation = numeric(),
+                      N_samples = numeric(),
+                      stringsAsFactors = FALSE)
+
+results_3LA <- data.frame(Blendshape = character(),
+                      Activation = character(),
+                      Intercept = numeric(),
+                      Effect = numeric(),
+                      Perc_eff = numeric(),
+                      Std_error = numeric(),
+                      T_value = numeric(),
+                      P_value = numeric(),
+                      Random_eff = numeric(),
+                      Correlation = numeric(),
+                      N_samples = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Classify the frames for each blendshape
+data_horizontal_going_rightC <- data_horizontal_going_right
+for(blendshape in blendshapes) {
+  data_horizontal_going_rightC <- classify(data_horizontal_going_rightC, blendshape)
+}
+
+# Fit the model and update the results data frame for each blendshape
+for (blendshape in blendshapes) {
+  results_3HA <- fit_model(data_horizontal_going_rightC, blendshape, results_3HA, 
+                           "3", "HA")
+  results_3LA <- fit_model(data_horizontal_going_rightC, blendshape, results_3LA, 
+                           "3", "LA")
+}
+
+# Update row names for consecutive numbering
+rownames(results_3HA) <- 1:nrow(results_3HA) 
+rownames(results_3LA) <- 1:nrow(results_3LA) 
+```
+
+
+### Camera 0 vs Camera 4: Horizontal Angle Going Left
+
+```{r C0 vs C4, message=FALSE}
+# Create empty results dataframes
+results_4HA <- data.frame(Blendshape = character(),
+                      Activation = character(),
+                      Intercept = numeric(),
+                      Effect = numeric(),
+                      Perc_eff = numeric(),
+                      Std_error = numeric(),
+                      T_value = numeric(),
+                      P_value = numeric(),
+                      Random_eff = numeric(),
+                      Correlation = numeric(),
+                      N_samples = numeric(),
+                      stringsAsFactors = FALSE)
+
+results_4LA <- data.frame(Blendshape = character(),
+                      Activation = character(),
+                      Intercept = numeric(),
+                      Effect = numeric(),
+                      Perc_eff = numeric(),
+                      Std_error = numeric(),
+                      T_value = numeric(),
+                      P_value = numeric(),
+                      Random_eff = numeric(),
+                      Correlation = numeric(),
+                      N_samples = numeric(),
+                      stringsAsFactors = FALSE)
+
+# Classify the frames for each blendshape
+data_horizontal_going_leftC <- data_horizontal_going_left
+for(blendshape in blendshapes) {
+  data_horizontal_going_leftC <- classify(data_horizontal_going_leftC, blendshape)
+}
+
+# Fit the model and update the results data frame for each blendshape
+for (blendshape in blendshapes) {
+  results_4HA <- fit_model(data_horizontal_going_leftC, blendshape, results_4HA, 
+                           "4", "HA")
+  results_4LA <- fit_model(data_horizontal_going_leftC, blendshape, results_4LA, 
+                           "4", "LA")
+}
+
+# Update row names for consecutive numbering
+rownames(results_4HA) <- 1:nrow(results_4HA)
+rownames(results_4LA) <- 1:nrow(results_4LA)
+```
+
+
+### Save files
+
+Save the results and the classified dataframe.
+
+```{r Save results}
+write.csv(results_3HA, "../Results/Results_Horizontal_Right_HA.csv", row.names=FALSE)
+write.csv(results_3LA, "../Results/Results_Horizontal_Right_LA.csv", row.names=FALSE)
+write.csv(results_4HA, "../Results/Results_Horizontal_Left_HA.csv", row.names=FALSE)
+write.csv(results_4LA, "../Results/Results_Horizontal_Left_LA.csv", row.names=FALSE)
+
+write.csv(data_horizontal_going_rightC, "Data/Data_Horizontal_Right_Classified.csv", row.names=FALSE)
+write.csv(data_horizontal_going_leftC, "Data/Data_Horizontal_Left_Classified.csv", row.names=FALSE)
+```
+
+
+# Plot frames
+
+The functions below can be used to create and save plots of the temporal
+progression of a specified blendshape for each recording. This can be used for
+choosing different values for the multiplier for the "HighlyActivated" threshold
+or the minimal threshold for "NotActivated".
+
+NB: The code for plotting is disabled by default.
+
+
+### Color background
+
+The function below creates a color dataframe, which enables us to color the 
+background of a plot according to the activation levels of the frames. 
+
+```{r Color dataframe, eval=FALSE}
+create_color_df <- function(df, blendshape) {
+  activation_col <- paste(blendshape, "Activation", sep="_")
+  
+  # Initialize color_df dataframe
+  color_df <- data.frame(start = numeric(), end = numeric(), Color = character(),
+                         stringsAsFactors = FALSE)
+  # Initialize variables for tracking section start and end
+  start_frame <- df$FrameNr[1]
+  last_frame <- df$FrameNr[1]
+  last_color <- df[[activation_col]][1]
+  # Iterate over each row in the dataframe
+  for (i in seq_along(df$FrameNr)[-1]) {
+    current_frame <- df$FrameNr[i]
+    current_color <- df[[activation_col]][i]
+    # Check if there is a split between sections
+    if (current_frame - last_frame > 1 || current_color != last_color) {
+      # Add a row to color_df for the previous section
+      color_df <- rbind(color_df, data.frame(start = start_frame, 
+                                             end = last_frame,
+                                             Color = last_color, 
+                                             stringsAsFactors = FALSE))
+      # Update variables for tracking section start and end
+      start_frame <- current_frame
+    }
+    last_frame <- current_frame
+    last_color <- current_color
+  }
+  # Add final row to color_df for last section
+  color_df <- rbind(color_df, data.frame(start = start_frame, 
+                                         end = last_frame,
+                                         Color = last_color, 
+                                         stringsAsFactors = FALSE))
+  return(color_df)
+}
+```
+
+
+### Plot individual recording
+
+```{r Individual recording, eval=FALSE}
+# Specify the recording, blendshape, multiplier, and minimal threshold
+idx <- "P1.A.RS"
+blendshape <- "BrowDownRight"
+mult <- 0.50
+min_thresh <- 3
+
+# Create a temporary dataframe
+tmp <- data_horizontal_going_right[data_horizontal_going_right$ID == idx,]
+tmp <- classify(tmp, blendshape, mult)
+
+# Create a new color_df with the start and end frames of each section to color
+color_df <- create_color_df(tmp[tmp$Camera == "C0",], blendshape)
+
+# Define the colors for the lines and background colors separately
+line_colors <- c("C0" = "darkslategrey", "C3" = "chocolate")
+bg_colors <- c("HA" = "tomato4", "LA" = "steelblue1", "NA" = "grey90")
+
+ggplot(tmp, aes(x = FrameNr, y = !!sym(blendshape), color = Camera)) +
+  geom_line() +
+  scale_x_continuous(limits = c(min(tmp$FrameNr)-5,max(tmp$FrameNr)+5), expand = c(0, 0)) +
+  scale_y_continuous(limits = c(-2,max(tmp[[blendshape]])+10), expand = c(0, 0)) +
+  xlab("Frame") +
+  ylab(paste(blendshape, " Measurement")) +
+  geom_rect(data = color_df, aes(xmin = start, xmax = end, ymin = -Inf, 
+                                 ymax = Inf, fill = Color),
+            alpha = 0.2, inherit.aes = FALSE) +
+  scale_fill_manual(values = bg_colors, labels = c("HA", "LA", "NA")) + 
+  scale_color_manual(values = line_colors, labels = c("C0", "C3")) + 
+  labs(color = NULL, fill = NULL) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        legend.position = "top")
+```
+
+
+### Plot all and save
+
+The code block below plots all blendshapes for every video and saves it to a 
+folder.
+
+```{r eval=FALSE}
+mult <- 0.50
+min_thresh <- 3
+comp <- "C3"
+
+# Define the colors for the lines and background colors separately
+line_colors <- c("C0" = "darkslategrey", comp = "chocolate")
+bg_colors <- c("HA" = "tomato4", "LA" = "steelblue1", "NA" = "grey90")
+
+for(blendshape in blendshapes) {
+  for(idx in levels(data_horizontal_going_leftC$ID)) {
+    name <- paste("plots/", blendshape, "_", idx, ".png", sep="")
+    tmp <- data_horizontal_going_leftC[data_horizontal_going_leftC$ID == idx,]
+    tmp <- droplevels(tmp)
+    color_df <- create_color_df(tmp[tmp$Camera == "C0",], blendshape)
+    MyPlot <- ggplot(tmp, aes(x = FrameNr, y = !!sym(blendshape), color = Camera)) + 
+      geom_line() + 
+      scale_x_continuous(limits = c(min(tmp$FrameNr)-5,max(tmp$FrameNr)+5), expand = c(0, 0)) + 
+      scale_y_continuous(limits = c(-2,max(tmp[[blendshape]])+10), expand = c(0, 0)) + 
+      xlab("Frame") + 
+      ylab(paste(blendshape, " Measurement")) + 
+      geom_rect(data = color_df, aes(xmin = start, xmax = end, ymin = -Inf, 
+                                     ymax = Inf, fill = Color), 
+                alpha = 0.2, inherit.aes = FALSE) + 
+      scale_fill_manual(values = bg_colors, labels = c("HA", "LA", "NA")) +  
+      scale_color_manual(values = line_colors, labels = c("C0", comp)) +
+      labs(color = NULL, fill = NULL) + 
+      theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+                            legend.position = "top")
+    ggsave(name, plot = MyPlot, width = 15, height = 5, units = "in", device = "png")
+  }
+}
+```
+
