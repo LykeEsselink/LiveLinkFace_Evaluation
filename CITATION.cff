@@ -1,0 +1,36 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: Live Link Face Evaluation
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Lyke Davita
+    family-names: Esselink
+    email: l.d.esselink@uva.nl
+    affiliation: University of Amsterdam
+    orcid: 'https://orcid.org/0000-0002-4077-1120'
+  - given-names: Floris
+    family-names: Roelofsen
+    email: f.roelofsen@uva.nl
+    affiliation: University of Amsterdam
+    orcid: 'https://orcid.org/0000-0002-3224-5251'
+  - given-names: Marloes
+    family-names: Oomen
+    email: m.oomen2@uva.nl
+    affiliation: University of Amsterdam
+    orcid: 'https://orcid.org/0000-0002-3420-6432'
+identifiers:
+  - type: url
+    value: >-
+      https://github.com/LykeEsselink/LiveLinkFace_Evaluation
+repository-code: 'https://github.com/LykeEsselink/LiveLinkFace_Evaluation'
+keywords:
+  - Live Link Face
+  - Blendshapes
+  - Animation
+  - Avatar
+  - Facial expressions
