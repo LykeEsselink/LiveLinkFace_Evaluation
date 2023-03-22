@@ -1,2 +1,8 @@
 # LiveLinkFace_Evaluation
-Evaluation of the sensitivity of the Live Link Face application to changes of the setup of the camera with relation to the subject's face.
+This project concerns the evaluation of the sensitivity of the Live Link Face application to changes of the setup of the camera with relation to the subject's face. As a first step, we have limited our evaluation to changes in the angle of the camera. The context, process, and results pertaining to this first step are described in the manuscript, "TrueDepth measurements of facial expressions: Sensitivity to the angle between camera and face".
+
+This repository containts the data, scripts, and results for the evaluation of the Live Link Face application on iPhone models with the TrueDepth camera. 
+
+The 'Scripts' folder comprises the horizontal and vertical analysis R markdown scripts, in addition to the folder containing the data. This 'Data' folder contains the raw data required to run the analysis scripts, as well as the processed data for all cameras. The latter contains two extra columns for each blendshape. These columns indicate whether a frame is considered 'NotActivated', 'Activated', or 'HighlyActivated' at both the level of each camera individually, and at the level of both cameras that are considered for each model.
+
+The 'Results' folder contains csv files with the model summaries for each blendshape of Low Activation and High Activation frames in all angle directions: horizontal angle going left, horizontal angle going right, vertical angle going up, and vertical angle going down.
